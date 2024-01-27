@@ -10,9 +10,11 @@ import { ArrowsUpDownIcon } from "@heroicons/react/24/outline";
 import CategoryDropdown from "./CategoryDropdown";
 import EmptyFeed from "./EmptyFeed";
 import TagsFilter from "~/components/TagsFilter";
+import type { OmitTimestamps } from "~/utils/types";
+import { getSortFilter } from "~/utils/loader";
 
 interface ModelListType {
-  data: Model[];
+  data: OmitTimestamps<Model>[];
   total: number;
   currentPage: number;
   limit: number;
@@ -27,6 +29,7 @@ interface ModelListType {
   hideCategories?: boolean;
 }
 
+export type ModelListDataItem = Awaited<ReturnType<typeof getSortFilter>>["categories"]
 const ModelsListComponent = ({
   data = [],
   total = 0,
