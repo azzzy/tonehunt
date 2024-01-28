@@ -3,9 +3,10 @@ import { db as drizzleDb } from "~/utils/db.drizzle.server";
 import type { User } from "@supabase/supabase-js";
 import { sub } from "date-fns";
 import type { Model, Prisma } from "@prisma/client";
-import { category, favorite, model, modelDownload, profile } from "../../drizzle/schema";
-import { and, arrayOverlaps, eq, exists, getTableColumns, inArray, sql } from "drizzle-orm";
+import { category, counts, favorite, model, modelDownload, profile } from "../../drizzle/schema";
+import { and, arrayOverlaps, count, countDistinct, desc, eq, exists, getTableColumns, inArray, sql } from "drizzle-orm";
 import { isNonEmptyArray } from "~/utils/array";
+import { alias } from "drizzle-orm/pg-core";
 
 interface getModelsType {
   limit?: number;
@@ -168,47 +169,52 @@ export const getModels = async (params: getModelsType) => {
 };
 
 export const getTrendingModels = async (params: getModelsType) => {
-  const modelFields = getTableColumns(model);
 
-  const query = drizzleDb
-    .select({
-      ...modelFields,
-      profile: {
-        id: profile.id,
-        username: profile.username,
-      },
-      _count: {
-        favorites: sql`(select count(${favorite.id}) from ${favorite} where ${favorite.modelId} = ${model.id})`.mapWith(Number),
-        downloads: sql`(select count(${modelDownload.modelId}) from ${modelDownload} where ${modelDownload.modelId} = ${model.id})`.mapWith(Number)
-      },
+  const trending = drizzleDb.$with("trending").as(
+    drizzleDb.select({
+      model: getTableColumns(model),
       category: {
-        id: category.id,
-        title: category.title,
         slug: category.slug,
-        pluralTitle: category.pluralTitle,
       },
+      profile: {
+        username: profile.username
+      },
+      favoritesCount: countDistinct(favorite.id).as("favoritesCount"),
+      downloadsCount: countDistinct(modelDownload.id).as("downloadsCount"),
     }).from(model)
     .innerJoin(profile, eq(model.profileId, profile.id))
     .innerJoin(category, eq(model.categoryId, category.id))
-    .leftJoin(modelDownload, eq(model.id, modelDownload.modelId))
+    .innerJoin(favorite, eq(favorite.modelId, model.id))
+    .innerJoin(modelDownload, eq(modelDownload.modelId, model.id))
     .where(
       and(
         eq(model.active, true),
         eq(model.deleted, false),
         params.categoryId ? eq(model.categoryId, params.categoryId) : undefined,
         isNonEmptyArray(params.tags) ? arrayOverlaps(model.tags, params.tags) : undefined,
+        sql<[string, string]>`${favorite.createdAt} > (CURRENT_DATE - INTERVAL '7 days')`
       )
-    ).$dynamic();
+    ).groupBy(model.id, profile.id, category.id)
+  );
 
-  const modelsCountResult = await drizzleDb.execute(sql`SELECT COUNT(*) as count FROM (${query}) q`);
+  const [{ total  }] = await drizzleDb.with(trending).select({
+    total: count(),
+  }).from(trending).execute();
 
-  const models = await query
-    .limit(params.limit ?? 10)
-    .offset(params.next ?? 0)
-    .execute();
+  const data = await drizzleDb.with(trending).select({
+    ...trending.model,
+    category: trending.category,
+    profile: trending.profile,
+    _count: {
+      favorites: trending.favoritesCount,
+      downloads: trending.downloadsCount,
+    }
+  }).from(trending)
+    .orderBy(desc(trending.favoritesCount), desc(trending.downloadsCount))
+    .limit(params.limit ?? 10).offset(params.next ?? 0)
 
   return {
-    total: (modelsCountResult.rows[0].count ?? 0) as number,
-    data: models,
+    total,
+    data,
   };
 }
